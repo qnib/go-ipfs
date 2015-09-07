@@ -4,9 +4,8 @@ import (
 	"io"
 	"strings"
 
-	context "github.com/ipfs/go-ipfs/Godeps/_workspace/src/golang.org/x/net/context"
 	cmds "github.com/ipfs/go-ipfs/commands"
-	namesys "github.com/ipfs/go-ipfs/namesys"
+	core "github.com/ipfs/go-ipfs/core"
 	path "github.com/ipfs/go-ipfs/path"
 	u "github.com/ipfs/go-ipfs/util"
 )
@@ -37,17 +36,7 @@ Resolve the value of your identity:
   > ipfs resolve /ipns/QmatmE9msSfkKxoffpHwNLNKgwZG8eT9Bud6YoPab52vpy
   /ipfs/Qmcqtw8FfrVSBaRmbWwHxt3AuySBhJLcvmFYi3Lbc4xnwj
 
-Resolve the value of another name:
-
-  > ipfs resolve /ipns/QmbCMUZw6JFeZ7Wp9jkzbye3Fzp2GGcPgC3nmeUjfVF87n
-  /ipns/QmatmE9msSfkKxoffpHwNLNKgwZG8eT9Bud6YoPab52vpy
-
-Resolve the value of another name recursively:
-
-  > ipfs resolve -r /ipns/QmbCMUZw6JFeZ7Wp9jkzbye3Fzp2GGcPgC3nmeUjfVF87n
-  /ipfs/Qmcqtw8FfrVSBaRmbWwHxt3AuySBhJLcvmFYi3Lbc4xnwj
-
-Resolve the value of an IPFS DAG path:
+Resolve the value of a DAG link path:
 
   > ipfs resolve /ipfs/QmeZy1fGbwgVSrqbfh9fKQrAWgeyRnj7h8fsHS1oy3k99x/beep/boop
   /ipfs/QmYRMjyvAiHKN9UTi8Bzt1HUspmSRD8T8DwxfSMzLgBon1
@@ -58,9 +47,7 @@ Resolve the value of an IPFS DAG path:
 	Arguments: []cmds.Argument{
 		cmds.StringArg("name", true, false, "The name to resolve.").EnableStdin(),
 	},
-	Options: []cmds.Option{
-		cmds.BoolOption("recursive", "r", "Resolve until the result is an IPFS name"),
-	},
+	Options: []cmds.Option{},
 	Run: func(req cmds.Request, res cmds.Response) {
 
 		n, err := req.InvocContext().GetNode()
@@ -78,34 +65,21 @@ Resolve the value of an IPFS DAG path:
 		}
 
 		name := req.Arguments()[0]
-		recursive, _, _ := req.Option("recursive").Bool()
-		depth := 1
-		if recursive {
-			depth = namesys.DefaultDepthLimit
+
+		p, err := path.ParsePath(name)
+		if err != nil {
+			res.SetError(err, cmds.ErrClient)
+			return
 		}
 
-		// for /ipfs/ paths, just parse the path
-		// for /ipns/ paths, resolve into a /ipfs/ path
-		var p path.Path
-		if strings.HasPrefix(name, "/ipfs/") || !strings.HasPrefix(name, "/") {
-			p, err = path.ParsePath(name)
-		} else {
-			p, err = n.Namesys.ResolveN(req.Context(), name, depth)
-		}
+		node, err := core.Resolve(req.Context(), n, p)
 		if err != nil {
 			res.SetError(err, cmds.ErrNormal)
 			return
 		}
 
-		// now fully resolve the /ipfs/ path
-		// (walk DAG links if there is a path of link names)
-		output, err := resolveIpfsPath(req.Context(), n.Resolver, p)
-		if err != nil {
-			res.SetError(err, cmds.ErrNormal)
-			return
-		}
-
-		res.SetOutput(&ResolvedPath{output})
+		key, err := node.Key()
+		res.SetOutput(&ResolvedPath{path.FromKey(key)})
 	},
 	Marshalers: cmds.MarshalerMap{
 		cmds.Text: func(res cmds.Response) (io.Reader, error) {
@@ -117,18 +91,4 @@ Resolve the value of an IPFS DAG path:
 		},
 	},
 	Type: ResolvedPath{},
-}
-
-func resolveIpfsPath(ctx context.Context, r *path.Resolver, p path.Path) (path.Path, error) {
-	node, err := r.ResolvePath(ctx, p)
-	if err != nil {
-		return "", err
-	}
-
-	key, err := node.Key()
-	if err != nil {
-		return "", err
-	}
-
-	return path.FromKey(key), nil
 }
