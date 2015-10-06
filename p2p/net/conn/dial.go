@@ -265,3 +265,8 @@ func MultiaddrNetMatch(tgt ma.Multiaddr, srcs []ma.Multiaddr) ma.Multiaddr {
 	}
 	return nil
 }
+
+func IsTcpMultiaddr(a ma.Multiaddr) bool {
+	p := a.Protocols()
+	return len(p) == 2 && (p[0].Name == "ip4" || p[0].Name == "ip6") && p[1].Name == "tcp"
+}

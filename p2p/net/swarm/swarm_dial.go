@@ -44,6 +44,9 @@ var (
 // add loop back in Dial(.)
 const dialAttempts = 1
 
+// number of concurrent outbound dials over transports that consume file descriptors
+const concurrentFdDials = 160
+
 // DialTimeout is the amount of time each dial attempt has. We can think about making
 // this larger down the road, or putting more granular timeouts (i.e. within each
 // subcomponent of Dial)
@@ -115,6 +118,7 @@ func (ds *dialsync) Unlock(dst peer.ID) {
 	if !found {
 		panic("called dialDone with no ongoing dials to peer: " + dst.Pretty())
 	}
+
 	delete(ds.ongoing, dst) // remove ongoing dial
 	close(wait)             // release everyone else
 	ds.lock.Unlock()
@@ -398,21 +402,35 @@ func (s *Swarm) dialAddrs(ctx context.Context, d *conn.Dialer, p peer.ID, remote
 	// to end early.
 	go func() {
 		// rate limiting just in case. at most 10 addrs at once.
-		limiter := ratelimit.NewRateLimiter(process.Background(), 10)
+		limiter := ratelimit.NewRateLimiter(process.Background(), 8)
 		limiter.Go(func(worker process.Process) {
 			// permute addrs so we try different sets first each time.
 			for _, i := range rand.Perm(len(remoteAddrs)) {
-				select {
-				case <-foundConn: // if one of them succeeded already
-					break
-				case <-worker.Closing(): // our context was cancelled
-					break
-				default:
+				if conn.IsTcpMultiaddr(remoteAddrs[i]) {
+					// For addresses that require an FD to dial
+					select {
+					case <-foundConn: // if one of them succeeded already
+						break
+					case <-worker.Closing(): // our context was cancelled
+						break
+					case s.fdRateLimit <- struct{}{}:
+					}
+				} else {
+					// for addresses that require no extra fd to dial
+					select {
+					case <-foundConn: // if one of them succeeded already
+						break
+					case <-worker.Closing(): // our context was cancelled
+						break
+					default:
+					}
 				}
 
 				workerAddr := remoteAddrs[i] // shadow variable to avoid race
+
 				limiter.LimitedGo(func(worker process.Process) {
 					dialSingleAddr(workerAddr)
+					<-s.fdRateLimit
 				})
 			}
 		})
